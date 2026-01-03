@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>Professional Seed Map</title>
+<style>
+  body {
+    margin: 0;
+    background: #0e0e0e;
+    color: #fff;
+    font-family: Arial, sans-serif;
+    overflow: hidden;
+  }
+  #ui {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    background: #181818;
+    padding: 10px;
+    border-radius: 8px;
+    z-index: 10;
+  }
+  input, button {
+    background: #222;
+    color: #fff;
+    border: 1px solid #333;
+    padding: 5px;
+    border-radius: 4px;
+  }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  Seed:
+  <input id="seed" value="6331667460812775853">
+  <button onclick="generate()">Generate</button>
+</div>
+
+<canvas id="map"></canvas>
+
+<script>
+// ======================
+// CANVAS SETUP
+// ======================
+const canvas = document.getElementById("map");
+const ctx = canvas.getContext("2d");
+resize();
+window.onresize = resize;
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  generate();
+}
+
+// ======================
+// SEEDED RANDOM
+// ======================
+function mulberry32(a) {
+  return function() {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  }
+}
+
+// ======================
+// PERLIN NOISE
+// ======================
+function Perlin(seed) {
+  const rand = mulberry32(seed);
+  const perm = new Uint8Array(512);
+  for (let i = 0; i < 256; i++) perm[i] = i;
+  for (let i = 255; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [perm[i], perm[j]] = [perm[j], perm[i]];
+  }
+  for (let i = 0; i < 256; i++) perm[i + 256] = perm[i];
+
+  function grad(h, x, y) {
+    const u = h & 1 ? -x : x;
+    const v = h & 2 ? -y : y;
+    return u + v;
+  }
+
+  return function(x, y) {
+    const X = Math.floor(x) & 255;
+    const Y = Math.floor(y) & 255;
+    x -= Math.floor(x);
+    y -= Math.floor(y);
+    const u = x * x * x * (x * (x * 6 - 15) + 10);
+    const v = y * y * y * (y * (y * 6 - 15) + 10);
+
+    const aa = perm[X + perm[Y]];
+    const ab = perm[X + perm[Y + 1]];
+    const ba = perm[X + 1 + perm[Y]];
+    const bb = perm[X + 1 + perm[Y + 1]];
+
+    return lerp(
+      lerp(grad(aa, x, y), grad(ba, x - 1, y), u),
+      lerp(grad(ab, x, y - 1), grad(bb, x - 1, y - 1), u),
+      v
+    );
+  }
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+// ======================
+// BIOME LOGIC
+// ======================
+function biome(height, heat, moisture) {
+  if (height < -0.2) return "#0b3d91";      // Deep Ocean
+  if (height < 0) return "#1e90ff";         // Ocean
+  if (height < 0.05) return "#f4e19c";      // Beach
+  if (heat > 0.4 && moisture < 0) return "#e5c07b"; // Desert
+  if (heat < -0.3) return "#ffffff";        // Snow
+  if (moisture > 0.3) return "#2ecc71";     // Forest
+  if (height > 0.6) return "#7f8c8d";       // Mountains
+  return "#27ae60";                         // Plains
+}
+
+// ======================
+// CAMERA
+// ======================
+let zoom = 200;
+let offsetX = 0, offsetY = 0;
+let dragging = false, lastX, lastY;
+
+canvas.onwheel = e => {
+  zoom *= e.deltaY > 0 ? 1.1 : 0.9;
+  generate();
+};
+
+canvas.onmousedown = e => {
+  dragging = true;
+  lastX = e.clientX;
+  lastY = e.clientY;
+};
+
+canvas.onmouseup = () => dragging = false;
+
+canvas.onmousemove = e => {
+  if (!dragging) return;
+  offsetX += (e.clientX - lastX) / zoom;
+  offsetY += (e.clientY - lastY) / zoom;
+  lastX = e.clientX;
+  lastY = e.clientY;
+  generate();
+};
+
+// ======================
+// GENERATE MAP
+// ======================
+function generate() {
+  const seedStr = document.getElementById("seed").value;
+  let seed = 0;
+  for (let c of seedStr) seed += c.charCodeAt(0);
+
+  const heightNoise = Perlin(seed);
+  const heatNoise = Perlin(seed + 1337);
+  const moistureNoise = Perlin(seed + 9999);
+
+  const img = ctx.createImageData(canvas.width, canvas.height);
+  let i = 0;
+
+  for (let y = 0; y < canvas.height; y++) {
+    for (let x = 0; x < canvas.width; x++) {
+      const nx = x / zoom + offsetX;
+      const ny = y / zoom + offsetY;
+
+      let h = 0, f = 1, a = 1;
+      for (let o = 0; o < 4; o++) {
+        h += heightNoise(nx * f, ny * f) * a;
+        f *= 2;
+        a *= 0.5;
+      }
+
+      const heat = heatNoise(nx * 0.5, ny * 0.5);
+      const moisture = moistureNoise(nx * 0.5, ny * 0.5);
+
+      const col = biome(h, heat, moisture);
+      const rgb = col.match(/\w\w/g).map(v => parseInt(v, 16));
+
+      img.data[i++] = rgb[0];
+      img.data[i++] = rgb[1];
+      img.data[i++] = rgb[2];
+      img.data[i++] = 255;
+    }
+  }
+
+  ctx.putImageData(img, 0, 0);
+}
+
+generate();
+</script>
+</body>
+</html>
